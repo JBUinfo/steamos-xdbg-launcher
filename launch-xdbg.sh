@@ -476,6 +476,8 @@ else
 fi
 recover_gui
 
+[[ -z "$appid" ]] || is_uint "$appid" || die "AppID must be numeric: $appid"
+
 say "Debugger: $debugger_path"
 if (( launch_mode )); then
     say "Mode: launch before entry point"
