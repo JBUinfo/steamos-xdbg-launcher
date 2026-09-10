@@ -484,7 +484,13 @@ else
     say "Mode: attach to running game"
 fi
 [[ -n "$appid" ]] && say "AppID: $appid"
-[[ -n "$game_pid" ]] && say "Detected Wine process: Linux PID $game_pid" || say "Game process: not used"
+if [[ -n "$game_pid" ]]; then
+    say "Detected Wine process: Linux PID $game_pid"
+elif (( launch_mode )); then
+    say "Game process: not required"
+else
+    say "Game process: not found"
+fi
 [[ -n "$compat_path" ]] && say "Compatdata: $compat_path"
 [[ -n "$prefix_path" ]] && say "WINEPREFIX: $prefix_path"
 [[ -n "$steam_root" ]] && say "Steam root: $steam_root"
