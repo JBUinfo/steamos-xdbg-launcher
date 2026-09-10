@@ -37,10 +37,10 @@ Attach mode (default) expects a game running in native Steam. The script
 detects its Proton prefix and launches the sibling debugger with runinprefix.
 If --appid is omitted, running Steam games are detected and grouped by AppID;
 the matching Windows PID is passed to xdbg when it can be identified.
-Use --launch to start any Windows executable at its entry point; that mode
-does not need a running game. Steam game paths automatically select their
-AppID, compatdata and Proton; non-Steam targets need --compatdata/--prefix or
-an interactive prefix choice.
+Use --launch to open a standalone Windows executable in xdbg paused before its
+entry point; that mode does not start Steam games. Steam games must be started
+through Steam and debugged with Attach. If no --compatdata/--prefix is supplied
+for a standalone target, the launcher offers an interactive prefix choice.
 When run with no arguments in a terminal, the script first asks whether to
 attach or launch. Flags skip that menu.
 
@@ -51,7 +51,7 @@ Options:
   --steam-root PATH   Alternate Steam root
   --compatdata DIR    Override the auto-detected compatdata directory
   --prefix DIR        Proton prefix directory (must be compatdata/pfx)
-  --launch EXE        Start EXE through xdbg before it runs (no game needed)
+  --launch EXE        Open a non-game EXE paused before it runs
   --target-cmdline S  Command-line string for --launch
   --target-cwd DIR    Working directory for --launch
   --start-game        Start the AppID with Steam when it is not running
@@ -66,7 +66,7 @@ Examples:
   ./launch-xdbg.sh --appid 123456
   ./launch-xdbg.sh 123456 --debugger x32dbg.exe
   ./launch-xdbg.sh --appid 123456 --debugger x64dbg.exe --start-game
-  ./launch-xdbg.sh --launch "/path/to/Steam/steamapps/common/Game/game.exe"
+  ./launch-xdbg.sh --launch 'C:\Windows\System32\notepad.exe'
   ./launch-xdbg.sh --launch ./tool.exe \
       --compatdata "$HOME/.local/share/Steam/steamapps/compatdata/123456" \
       --proton "$HOME/.local/share/Steam/steamapps/common/Proton 11.0"

@@ -3,19 +3,25 @@
 `launch-xdbg.sh` runs a sibling `x32dbg.exe` or `x64dbg.exe` through Proton.
 It has two modes:
 
-- **Attach:** find a running Steam game's Proton prefix and attach xdbg to it.
-- **Launch:** start any Windows `.exe` through xdbg before its entry point;
-  no game needs to be running.
+- **Attach:** attach xdbg to a Steam game that is already running (or start it
+  through Steam with `--start-game`).
+- **Launch:** open a Windows `.exe` in xdbg paused before its entry point. You
+  can inspect it without running it; this mode is for standalone executables,
+  not for starting Steam games.
+
+For a Steam game, xdbg can load the EXE without running it, but it cannot start
+the game itself. Steam must create the game process; start it through Steam and
+use **Attach** while it is running.
 
 ## Requirements
 
 - SteamOS Desktop Mode and a complete x64dbg release (keep its DLLs/plugins).
 - Use `x32dbg.exe` for 32-bit targets and `x64dbg.exe` for 64-bit targets.
-- Attach mode requires native Steam so the game and debugger share `wineserver`.
-  Steam Flatpak is rejected.
-- Launching an executable inside a Steam library automatically detects its
-  AppID, compatdata prefix and Proton version. Non-Steam targets can use an
-  existing prefix selected interactively or supplied with `--compatdata`.
+- Steam games must be started through native Steam so the game and debugger
+  share `wineserver`; Steam Flatpak is rejected for Attach mode.
+- Launch mode uses an existing Proton prefix for standalone executables. If no
+  `--compatdata` or `--prefix` is supplied, the launcher lets you choose an
+  installed prefix, so you do not need to find its path manually.
 
 The launcher does not change game files or bypass anti-cheat. Debugging can
 make a game or the desktop unstable; use an offline/test setup.
@@ -55,16 +61,17 @@ the number of Wine processes instead of listing every helper process. The
 launcher then queries Wine's process list and automatically passes the matching
 Windows PID to xdbg when there is one clear game process. If several game
 processes exist, it shows their paths/PIDs so you can choose before xdbg opens.
-Launch asks only for the `.exe` path when it is inside a Steam library. For a
-non-Steam `.exe`, it shows a prefix chooser. Any CLI flag skips this menu.
+Launch asks for a standalone `.exe` path and, when needed, a Proton prefix. It
+opens xdbg with the target paused; it does not start Steam games. Any CLI flag
+skips this menu.
 
 ### Attach to a running Steam game
 
-Omit `--appid` to detect a running game automatically. If several games are
-running, choose one from the grouped list. Pass `--appid` directly when the
-process does not expose Steam's compatdata environment or when using
-`--start-game`. The ID is in the Steam Store URL (`/app/<id>/`) or in
-`steamapps/appmanifest_<id>.acf`.
+Start the game normally from Steam first, then run the script. Omit `--appid` to
+detect a running game automatically. If several games are running, choose one
+from the grouped list. Pass `--appid` directly when the process does not expose
+Steam's compatdata environment or when using `--start-game`. The ID is in the
+Steam Store URL (`/app/<id>/`) or in `steamapps/appmanifest_<id>.acf`.
 
 ```bash
 ./launch-xdbg.sh
@@ -77,31 +84,28 @@ launcher attempts the same Windows-PID selection after the game starts; if it
 cannot identify one process, open **Attach** (`Alt+A`) and select the actual
 game executable rather than a launcher/helper.
 
-### Launch before the target runs
+### Launch before the target runs (non-game executables)
 
-For a Steam game, pass only its executable: the launcher matches the path under
-`steamapps/common/<installdir>` to `appmanifest_<id>.acf`, then selects
-`steamapps/compatdata/<id>` and the Proton version recorded there.
+Use this mode for Windows tools that are not Steam games. xdbg opens the target
+paused before its entry point, so you can inspect it without executing it; press
+Run/F9 only when you want to start that standalone program.
 
-```bash
-./launch-xdbg.sh --launch \
-  "$HOME/.local/share/Steam/steamapps/common/Game/game.exe"
-```
-
-For a non-Steam executable, use an existing Proton prefix. `--compatdata` must
-contain `pfx/`; alternatively pass that exact `pfx` directory with `--prefix`.
+For example, launch Windows Notepad without supplying an AppID or a
+`--compatdata` path:
 
 ```bash
-./launch-xdbg.sh --launch "/path/to/tool.exe" \
-  --compatdata "$HOME/.local/share/Steam/steamapps/compatdata/123456" \
-  --proton "$HOME/.local/share/Steam/steamapps/common/Proton 11.0"
+./launch-xdbg.sh --launch 'C:\Windows\System32\notepad.exe'
 ```
+
+When no `--compatdata` or `--prefix` is provided, the script asks you to choose
+an installed Proton prefix. This avoids a manual compatdata lookup. You can
+still pass `--compatdata`/`--prefix` explicitly for a custom prefix.
 
 Optional target arguments and working directory:
 
 ```bash
 ./launch-xdbg.sh --launch "/path/to/tool.exe" \
-  --compatdata "/path/to/compatdata/custom" --proton "/path/to/Proton" \
+  --proton "/path/to/Proton" \
   --target-cmdline 'one two' --target-cwd "/path/to/tool-dir"
 ```
 
@@ -115,10 +119,11 @@ terminate debugged processes under Proton. Use `--scyllahide` (or
 `XDBG_DISABLE_SCYLLAHIDE=0`) when a target needs it. The Desktop shortcuts
 explicitly keep it disabled for a stable default.
 
-The target path can be a Linux path or a Wine-style Windows path. A Steam
-game may still require Steam's bootstrap and refuse a direct EXE launch; use
-attach mode plus `--start-game` for that case. Native Linux programs are not
-supported by xdbg.
+The target path can be a Linux path or a Wine-style Windows path. Steam games
+must be created by Steam, so launching their EXE directly from xdbg can stop
+with a Steam application-load error. To debug a Steam game, start it through
+Steam and use Attach (or `--start-game`); do not press Run/F9 in Launch mode.
+Native Linux programs are not supported by xdbg.
 
 Host-path targets use their containing directory as the default working
 directory. Override it with `--target-cwd` when a program needs another one.
@@ -154,11 +159,10 @@ sends a cleanup signal to Proton.
 - **Wrong debugger architecture:** use `x32dbg.exe` for PE32 targets and
   `x64dbg.exe` for PE32+ targets. Launch mode rejects a mismatch before Proton
   starts.
-- **"Debugging stopped" or a Steam application-load error:** the game
-  requires Steam to create it. Start it from Steam, then use attach mode, or
-  use `--start-game` in attach mode; do not launch that game's EXE directly.
-- **Steam path not detected:** verify that the executable is below
-  `steamapps/common/<installdir>` and that its `appmanifest_<id>.acf` exists;
-  otherwise pass `--appid` or `--compatdata` explicitly.
+- **"Debugging stopped" or a Steam application-load error:** Steam must create
+  the game process. Start it in Steam and use Attach (or `--start-game`); do not
+  launch that game's EXE directly from xdbg.
+- **Prefix not found for a standalone launch:** choose an installed Proton
+  prefix, or pass `--compatdata`/`--prefix` explicitly.
 - **Proton not found:** pass `--proton "/path/to/Proton"` explicitly.
 - **GUI errors:** run in Desktop Mode and inspect `--log` output.
