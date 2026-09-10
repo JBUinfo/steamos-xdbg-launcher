@@ -30,14 +30,15 @@ usage() {
     cat <<'EOF'
 Usage:
   ./launch-xdbg.sh [--appid APPID] [options] [-- XDBG_ARGS...]
-  ./launch-xdbg.sh --launch EXE --compatdata DIR --proton PATH [options]
+  ./launch-xdbg.sh --launch EXE [options]
 
 Attach mode (default) expects a game running in native Steam. The script
 detects its Proton prefix and launches the sibling debugger with runinprefix.
-If --appid is omitted, installed Steam apps are listed for interactive choice.
+If --appid is omitted, running Steam games are detected and grouped by AppID.
 Use --launch to start any Windows executable at its entry point; that mode
-does not need a running game, but it needs an explicit Proton compatdata/prefix
-unless an AppID is supplied.
+does not need a running game. Steam game paths automatically select their
+AppID, compatdata and Proton; non-Steam targets need --compatdata/--prefix or
+an interactive prefix choice.
 When run with no arguments in a terminal, the script first asks whether to
 attach or launch. Flags skip that menu.
 
@@ -46,7 +47,7 @@ Options:
   --debugger FILE     Sibling x32dbg.exe or x64dbg.exe (auto-detected)
   --proton PATH       Proton directory or proton script
   --steam-root PATH   Alternate Steam root
-  --compatdata DIR    Proton compatdata directory (contains pfx/)
+  --compatdata DIR    Override the auto-detected compatdata directory
   --prefix DIR        Proton prefix directory (must be compatdata/pfx)
   --launch EXE        Start EXE through xdbg before it runs (no game needed)
   --target-cmdline S  Command-line string for --launch
@@ -61,6 +62,7 @@ Examples:
   ./launch-xdbg.sh --appid 123456
   ./launch-xdbg.sh 123456 --debugger x32dbg.exe
   ./launch-xdbg.sh --appid 123456 --debugger x64dbg.exe --start-game
+  ./launch-xdbg.sh --launch "/path/to/Steam/steamapps/common/Game/game.exe"
   ./launch-xdbg.sh --launch ./tool.exe \
       --compatdata "$HOME/.local/share/Steam/steamapps/compatdata/123456" \
       --proton "$HOME/.local/share/Steam/steamapps/common/Proton 11.0"
@@ -70,8 +72,10 @@ steamapps/appmanifest_<id>.acf.
 
 Arguments after -- are passed unchanged to xdbg in attach mode. Match the
 debugger bitness to the Windows process (32-bit -> x32dbg.exe, 64-bit ->
-x64dbg.exe). In --launch mode use --target-cmdline and --target-cwd for the
-target's arguments and working directory.
+x64dbg.exe); launch mode validates this automatically. In --launch mode use
+--target-cmdline and --target-cwd for the target's arguments and working
+directory. A host-path target defaults to its own directory as the working
+directory.
 EOF
 }
 
@@ -175,6 +179,105 @@ collect_installed_apps() {
     done
 }
 
+app_name_for_id() {
+    local wanted=$1 root manifest name
+    for root in "${steam_roots[@]}"; do
+        manifest="$root/steamapps/appmanifest_${wanted}.acf"
+        [[ -f "$manifest" ]] || continue
+        name=$(awk -F'"' '$2 == "name" { print $4; exit }' "$manifest")
+        [[ -n "$name" ]] && { printf '%s' "$name"; return; }
+    done
+    printf 'AppID %s' "$wanted"
+}
+
+infer_steam_appid() {
+    local target=$1 target_real root root_real manifest id installdir game_dir game_real
+    [[ "$target" == /* && -f "$target" ]] || return 1
+    target_real=$(readlink -f -- "$target" 2>/dev/null || printf '%s' "$target")
+
+    for root in "${steam_roots[@]}"; do
+        [[ -d "$root/steamapps/common" ]] || continue
+        root_real=$(readlink -f -- "$root" 2>/dev/null || printf '%s' "$root")
+        for manifest in "$root"/steamapps/appmanifest_*.acf; do
+            [[ -f "$manifest" ]] || continue
+            id=${manifest##*/appmanifest_}; id=${id%.acf}
+            is_uint "$id" || continue
+            installdir=$(awk -F'"' '$2 == "installdir" { print $4; exit }' "$manifest")
+            [[ -n "$installdir" ]] || continue
+            game_dir="$root_real/steamapps/common/$installdir"
+            [[ -d "$game_dir" ]] || continue
+            game_real=$(readlink -f -- "$game_dir" 2>/dev/null || printf '%s' "$game_dir")
+            case "$target_real/" in
+                "$game_real/"*) printf '%s' "$id"; return 0 ;;
+            esac
+        done
+    done
+    return 1
+}
+
+running_ids=() running_names=() running_counts=()
+collect_running_apps() {
+    running_ids=() running_names=() running_counts=()
+    local -A counts=()
+    local file pid owner blob compat comm cmd id
+
+    for file in /proc/[0-9]*/environ; do
+        [[ -r "$file" ]] || continue
+        pid=${file#/proc/}; pid=${pid%/environ}
+        [[ "$pid" == "$$" ]] && continue
+        owner=$(stat -c '%u' "/proc/$pid" 2>/dev/null || printf '%s' -1)
+        [[ "$owner" == "$uid" ]] || continue
+        blob=$(proc_env "$file")
+        compat=$(norm "$(env_value "$blob" STEAM_COMPAT_DATA_PATH)")
+        [[ "$compat" =~ /steamapps/compatdata/([0-9]+)(/|$) ]] || continue
+        id=${BASH_REMATCH[1]}
+        comm=$(cat -- "/proc/$pid/comm" 2>/dev/null || true)
+        case "${comm,,}" in
+            wineserver*|wineboot*|x32dbg*|x64dbg*) continue ;;
+        esac
+        cmd=$(proc_cmd "/proc/$pid/cmdline")
+        case "${cmd,,}" in
+            *x32dbg.exe*|*x64dbg.exe*) continue ;;
+        esac
+        counts["$id"]=$(( ${counts[$id]:-0} + 1 ))
+    done
+
+    local sorted_id
+    ((${#counts[@]} > 0)) || return 1
+    while IFS= read -r sorted_id; do
+        [[ -n "$sorted_id" ]] || continue
+        running_ids+=("$sorted_id")
+        running_names+=("$(app_name_for_id "$sorted_id")")
+        running_counts+=("${counts[$sorted_id]}")
+    done < <(printf '%s\n' "${!counts[@]}" | sort -n)
+}
+
+choose_running_appid() {
+    collect_running_apps || return 1
+    local count=${#running_ids[@]} i choice
+    if (( count == 1 )); then
+        appid=${running_ids[0]}
+        say "Detected running Steam game: ${running_names[0]} (AppID $appid)."
+        return
+    fi
+    say "Running Steam games (processes grouped by AppID):"
+    for ((i=0; i<count; i++)); do
+        printf '  %2d) %s (AppID %s, %s Wine processes)\n' \
+            "$((i + 1))" "${running_names[i]}" "${running_ids[i]}" "${running_counts[i]}"
+    done
+    [[ -t 0 ]] || die "Multiple Steam games are running; pass --appid APPID"
+    while :; do
+        read -r -p "Choose a running game [1-$count, 0=cancel]: " choice || die "No selection made"
+        [[ "$choice" == 0 ]] && exit 0
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
+            appid=${running_ids[choice - 1]}
+            say "Selected ${running_names[choice - 1]} (AppID $appid)."
+            return
+        fi
+        warn "Choose a number from 1 to $count, or 0 to cancel."
+    done
+}
+
 choose_appid() {
     collect_installed_apps
     local count=${#installed_ids[@]} i choice
@@ -227,7 +330,7 @@ choose_appid() {
 }
 
 choose_mode() {
-    local choice target compat
+    local choice target
     say "xdbg launcher mode:"
     say "  1) Attach to a running Steam game"
     say "  2) Launch a Windows executable through xdbg"
@@ -247,9 +350,6 @@ choose_mode() {
                     warn "Enter a path to a Windows executable."
                 done
                 launch_exe=$target
-                read -r -e -p "Proton compatdata path (blank = choose a Steam app): " compat || die "No selection made"
-                compat=$(expand_user_path "$compat")
-                [[ -z "$compat" ]] || compat_override=$compat
                 return
                 ;;
             0) exit 0 ;;
@@ -442,6 +542,17 @@ find_debugger() {
     esac
 }
 
+pe_bitness() {
+    local info
+    command -v file >/dev/null 2>&1 || return 1
+    info=$(file -b -- "$1" 2>/dev/null || true)
+    case "$info" in
+        *PE32+*) printf '64' ;;
+        *PE32*) printf '32' ;;
+        *) return 1 ;;
+    esac
+}
+
 if (($# == 0)) && [[ -t 0 ]]; then
     interactive_menu=1
 fi
@@ -499,6 +610,9 @@ if (( launch_mode )); then
         [[ "$target_cwd" == /* ]] || target_cwd="$PWD/$target_cwd"
         [[ -d "$target_cwd" ]] || die "Target working directory not found: $target_cwd"
     fi
+    if [[ -z "$target_cwd" && "$launch_exe" == /* ]]; then
+        target_cwd=$(dirname -- "$launch_exe")
+    fi
     (( start_game == 0 )) || die "--start-game cannot be combined with --launch"
     ((${#debugger_args[@]} == 0)) || \
         die "Do not pass xdbg arguments after -- with --launch; use --target-cmdline/--target-cwd"
@@ -507,6 +621,14 @@ fi
 debugger_path=$(find_debugger)
 [[ -f "$debugger_path" ]] || die "Debugger not found: $debugger_path"
 debugger_dir=$(cd -- "$(dirname -- "$debugger_path")" && pwd -P) || die "Cannot access debugger directory"
+
+if (( launch_mode )); then
+    target_bits=$(pe_bitness "$launch_exe" || true)
+    debugger_bits=$(pe_bitness "$debugger_path" || true)
+    if [[ -n "$target_bits" && -n "$debugger_bits" && "$target_bits" != "$debugger_bits" ]]; then
+        die "Architecture mismatch: target is ${target_bits}-bit but debugger is ${debugger_bits}-bit; use x${target_bits}dbg.exe"
+    fi
+fi
 
 if [[ -n "$log_file" ]]; then
     mkdir -p "$(dirname -- "$log_file")"
@@ -518,6 +640,13 @@ if (( launch_mode )); then
     if [[ -n "$compat_override" || -n "$prefix_override" ]]; then
         locate_explicit_prefix
     else
+        if [[ -z "$appid" ]]; then
+            inferred_appid=$(infer_steam_appid "$launch_exe" || true)
+            if [[ -n "$inferred_appid" ]]; then
+                appid=$inferred_appid
+                say "Detected Steam game: $(app_name_for_id "$appid") (AppID $appid)."
+            fi
+        fi
         [[ -n "$appid" ]] || choose_appid
         [[ -n "$appid" ]] || die "Set --appid APPID or pass --compatdata/--prefix"
         is_uint "$appid" || die "AppID must be numeric: $appid"
@@ -525,7 +654,12 @@ if (( launch_mode )); then
     fi
 else
     if [[ -z "$appid" ]]; then
-        choose_appid
+        if (( start_game )); then
+            choose_appid
+        else
+            choose_running_appid || \
+                die "No running Steam games detected; start a game first or pass --appid APPID"
+        fi
     fi
     [[ -n "$appid" ]] || die "Set --appid APPID"
     is_uint "$appid" || die "AppID must be numeric: $appid"
@@ -571,6 +705,9 @@ fi
 [[ -n "$compat_path" ]] && say "Compatdata: $compat_path"
 [[ -n "$prefix_path" ]] && say "WINEPREFIX: $prefix_path"
 [[ -n "$steam_root" ]] && say "Steam root: $steam_root"
+if (( launch_mode )); then
+    [[ -n "$target_cwd" ]] && say "Target working directory: $target_cwd"
+fi
 [[ -n "$game_proton" ]] && say "Detected Proton: $game_proton"
 [[ -n "$game_container" ]] && say "Container: $game_container"
 say "DISPLAY: ${gui_display:-<empty>}"
