@@ -1,0 +1,18 @@
+# Runtime diagnostics and local debugger state
+logs/
+*.log
+x32dbg.ini
+x64dbg.ini
+*.dd32
+*.dd64
+
+# Large/private local copies of the x64dbg distribution
+tools/
+
+# Local exploratory notes
+PLAN_*.md
+
+# Common editor and Python artefacts
+.idea/
+.vscode/
+__pycache__/
