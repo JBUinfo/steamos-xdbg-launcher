@@ -39,6 +39,19 @@ If both debugger executables are beside the script, select one with
 
 ## Use
 
+### Interactive mode
+
+Run the script with no arguments (or use a Desktop shortcut):
+
+```text
+1) Attach to a running Steam game
+2) Launch a Windows executable through xdbg
+```
+
+Attach continues to the Steam-app menu. Launch asks for the `.exe` path, then
+lets you enter a compatdata path or choose an installed Steam prefix. Any CLI
+flag skips this menu.
+
 ### Attach to a running Steam game
 
 Omit `--appid` for a live list of installed Steam apps, or pass it directly.

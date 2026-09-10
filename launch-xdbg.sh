@@ -19,6 +19,7 @@ launch_exe=""
 target_cmdline=""
 target_cwd=""
 launch_mode=0
+interactive_menu=0
 start_game=0
 check_only=0
 wait_seconds=90
@@ -37,6 +38,8 @@ If --appid is omitted, installed Steam apps are listed for interactive choice.
 Use --launch to start any Windows executable at its entry point; that mode
 does not need a running game, but it needs an explicit Proton compatdata/prefix
 unless an AppID is supplied.
+When run with no arguments in a terminal, the script first asks whether to
+attach or launch. Flags skip that menu.
 
 Options:
   --appid APPID       Steam AppID (also the first positional argument)
@@ -78,6 +81,14 @@ say()  { printf '%s\n' "$*"; }
 
 is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
 norm() { local v=${1:-}; v=${v%/}; printf '%s' "$v"; }
+expand_user_path() {
+    local v=${1:-}
+    case "$v" in
+        '~') v=${HOME:-} ;;
+        '~/'*) v="${HOME:-}${v#\~}" ;;
+    esac
+    printf '%s' "$v"
+}
 
 env_value() {
     local blob=$1 key=$2
@@ -167,27 +178,83 @@ collect_installed_apps() {
 choose_appid() {
     collect_installed_apps
     local count=${#installed_ids[@]} i choice
-    (( count > 0 )) || die "No installed Steam apps found; pass --appid APPID"
+    if (( launch_mode )); then
+        (( count > 0 )) || die "No installed Steam apps found; pass --compatdata DIR"
+    else
+        (( count > 0 )) || die "No installed Steam apps found; pass --appid APPID"
+    fi
     if (( count == 1 )); then
         appid=${installed_ids[0]}
-        say "Selected ${installed_names[0]} (AppID $appid)."
+        if (( launch_mode )); then
+            say "Selected ${installed_names[0]} as the Proton prefix (AppID $appid)."
+        else
+            say "Selected ${installed_names[0]} (AppID $appid)."
+        fi
         return
     fi
 
-    say "Installed Steam apps:"
+    if (( launch_mode )); then
+        say "Choose a Steam Proton prefix for the target:"
+    else
+        say "Installed Steam apps:"
+    fi
     for ((i=0; i<count; i++)); do
         printf '  %2d) %s (AppID %s)\n' "$((i + 1))" "${installed_names[i]}" "${installed_ids[i]}"
     done
-    [[ -t 0 ]] || die "Multiple apps found; pass --appid APPID in non-interactive use"
+    if (( launch_mode )); then
+        [[ -t 0 ]] || die "Multiple prefixes found; pass --compatdata DIR or --appid APPID"
+    else
+        [[ -t 0 ]] || die "Multiple apps found; pass --appid APPID in non-interactive use"
+    fi
     while :; do
-        read -r -p "Choose a game [1-$count, 0=cancel]: " choice || die "No selection made"
+        if (( launch_mode )); then
+            read -r -p "Choose a prefix [1-$count, 0=cancel]: " choice || die "No selection made"
+        else
+            read -r -p "Choose a game [1-$count, 0=cancel]: " choice || die "No selection made"
+        fi
         [[ "$choice" == 0 ]] && exit 0
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
             appid=${installed_ids[choice - 1]}
-            say "Selected ${installed_names[choice - 1]} (AppID $appid)."
+            if (( launch_mode )); then
+                say "Selected ${installed_names[choice - 1]} as the Proton prefix (AppID $appid)."
+            else
+                say "Selected ${installed_names[choice - 1]} (AppID $appid)."
+            fi
             return
         fi
         warn "Choose a number from 1 to $count, or 0 to cancel."
+    done
+}
+
+choose_mode() {
+    local choice target compat
+    say "xdbg launcher mode:"
+    say "  1) Attach to a running Steam game"
+    say "  2) Launch a Windows executable through xdbg"
+    while :; do
+        read -r -p "Choose a mode [1-2, 0=cancel]: " choice || die "No selection made"
+        case "$choice" in
+            1)
+                launch_mode=0
+                return
+                ;;
+            2)
+                launch_mode=1
+                while :; do
+                    read -r -e -p "Windows EXE path: " target || die "No target path supplied"
+                    target=$(expand_user_path "$target")
+                    [[ -n "$target" ]] && break
+                    warn "Enter a path to a Windows executable."
+                done
+                launch_exe=$target
+                read -r -e -p "Proton compatdata path (blank = choose a Steam app): " compat || die "No selection made"
+                compat=$(expand_user_path "$compat")
+                [[ -z "$compat" ]] || compat_override=$compat
+                return
+                ;;
+            0) exit 0 ;;
+            *) warn "Choose 1 for Attach, 2 for Launch, or 0 to cancel." ;;
+        esac
     done
 }
 
@@ -375,6 +442,10 @@ find_debugger() {
     esac
 }
 
+if (($# == 0)) && [[ -t 0 ]]; then
+    interactive_menu=1
+fi
+
 while (($#)); do
     case "$1" in
         -h|--help) usage; exit 0 ;;
@@ -407,6 +478,10 @@ while (($#)); do
         *) [[ -z "$appid" ]] || die "Unexpected argument: $1"; appid=$1; shift ;;
     esac
 done
+
+if (( interactive_menu )); then
+    choose_mode
+fi
 
 is_uint "$wait_seconds" || die "--wait must be an integer"
 (( wait_seconds <= 600 )) || die "--wait cannot exceed 600 seconds"
