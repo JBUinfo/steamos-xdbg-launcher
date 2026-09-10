@@ -34,7 +34,8 @@ Usage:
 
 Attach mode (default) expects a game running in native Steam. The script
 detects its Proton prefix and launches the sibling debugger with runinprefix.
-If --appid is omitted, running Steam games are detected and grouped by AppID.
+If --appid is omitted, running Steam games are detected and grouped by AppID;
+the matching Windows PID is passed to xdbg when it can be identified.
 Use --launch to start any Windows executable at its entry point; that mode
 does not need a running game. Steam game paths automatically select their
 AppID, compatdata and Proton; non-Steam targets need --compatdata/--prefix or
@@ -190,6 +191,17 @@ app_name_for_id() {
     printf 'AppID %s' "$wanted"
 }
 
+app_install_dir_for_id() {
+    local wanted=$1 root manifest installdir
+    for root in "${steam_roots[@]}"; do
+        manifest="$root/steamapps/appmanifest_${wanted}.acf"
+        [[ -f "$manifest" ]] || continue
+        installdir=$(awk -F'"' '$2 == "installdir" { print $4; exit }' "$manifest")
+        [[ -n "$installdir" ]] && { printf '%s' "$installdir"; return; }
+    done
+    return 1
+}
+
 infer_steam_appid() {
     local target=$1 target_real root root_real manifest id installdir game_dir game_real
     [[ "$target" == /* && -f "$target" ]] || return 1
@@ -275,6 +287,71 @@ choose_running_appid() {
             return
         fi
         warn "Choose a number from 1 to $count, or 0 to cancel."
+    done
+}
+
+attach_windows_pid="" attach_windows_exe=""
+attach_candidate_pids=() attach_candidate_exes=()
+select_attach_process() {
+    attach_windows_pid="" attach_windows_exe=""
+    attach_candidate_pids=() attach_candidate_exes=()
+    (( launch_mode == 0 )) || return 0
+    [[ -n "$appid" && -n "${proton_script:-}" ]] || return 0
+
+    local installdir listing line wpid_hex wpid exe normalized fragment choice i
+    installdir=$(app_install_dir_for_id "$appid" || true)
+    [[ -n "$installdir" ]] || return 0
+    fragment=${installdir//\\//}
+    fragment=${fragment,,}
+    fragment="/steamapps/common/${fragment#/}/"
+    if command -v timeout >/dev/null 2>&1; then
+        listing=$(WINEDEBUG=-all timeout 15s "$proton_script" runinprefix winedbg --command 'info proc' 2>&1 || true)
+    else
+        listing=$(WINEDEBUG=-all "$proton_script" runinprefix winedbg --command 'info proc' 2>&1 || true)
+    fi
+
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*([0-9A-Fa-f]+)[[:space:]]+[0-9]+[[:space:]]+(.+)$ ]] || continue
+        wpid_hex=${BASH_REMATCH[1]}
+        exe=${BASH_REMATCH[2]}
+        exe=${exe#*\'}
+        exe=${exe%\'}
+        normalized=${exe//\\//}
+        normalized=${normalized,,}
+        [[ "$normalized" == *"$fragment"* ]] || continue
+        wpid=$(printf '%d' "0x$wpid_hex" 2>/dev/null || true)
+        [[ -n "$wpid" ]] || continue
+        attach_candidate_pids+=("$wpid")
+        attach_candidate_exes+=("$exe")
+    done <<<"$listing"
+
+    local count=${#attach_candidate_pids[@]}
+    (( count > 0 )) || return 0
+    if (( count == 1 )); then
+        attach_windows_pid=${attach_candidate_pids[0]}
+        attach_windows_exe=${attach_candidate_exes[0]}
+        say "Detected Windows process: $attach_windows_exe (PID $attach_windows_pid)."
+        return
+    fi
+
+    say "Matching Windows processes for $(app_name_for_id "$appid") (grouped by game path):"
+    for ((i=0; i<count; i++)); do
+        printf '  %2d) PID %s  %s\n' "$((i + 1))" "${attach_candidate_pids[i]}" "${attach_candidate_exes[i]}"
+    done
+    if [[ ! -t 0 ]]; then
+        warn "Multiple matching processes found; xdbg Attach will remain available."
+        return
+    fi
+    while :; do
+        read -r -p "Choose a process to attach [1-$count, 0=skip]: " choice || die "No selection made"
+        [[ "$choice" == 0 ]] && return
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
+            attach_windows_pid=${attach_candidate_pids[choice - 1]}
+            attach_windows_exe=${attach_candidate_exes[choice - 1]}
+            say "Selected $attach_windows_exe (PID $attach_windows_pid)."
+            return
+        fi
+        warn "Choose a number from 1 to $count, or 0 to skip."
     done
 }
 
@@ -766,6 +843,10 @@ fi
 [[ -z "$gui_dbus" ]] || export DBUS_SESSION_BUS_ADDRESS="$gui_dbus"
 [[ -z "$gui_session" ]] || export XDG_SESSION_TYPE="$gui_session"
 
+if (( ! launch_mode )); then
+    select_attach_process
+fi
+
 before=$(count_wineservers "$prefix_path")
 say "wineserver(s) before xdbg: $before"
 if (( launch_mode )); then
@@ -777,7 +858,12 @@ if (( launch_mode )); then
     [[ -z "$target_cwd" ]] || launch_args+=("$target_cwd")
 else
     say "Launching host Proton with runinprefix; keep the game open."
-    launch_args=("${debugger_args[@]}")
+    if [[ -n "$attach_windows_pid" && ${#debugger_args[@]} -eq 0 ]]; then
+        say "Starting xdbg with automatic attach (-p $attach_windows_pid)."
+        launch_args=(-p "$attach_windows_pid")
+    else
+        launch_args=("${debugger_args[@]}")
+    fi
 fi
 
 proton_pid=""

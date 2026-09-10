@@ -51,8 +51,11 @@ Run the script with no arguments (or use a Desktop shortcut):
 
 Attach detects running Steam games first. If one game is running it is selected
 automatically; if several are running, the menu shows one entry per AppID and
-the number of Wine processes instead of listing every helper process. Launch
-asks only for the `.exe` path when it is inside a Steam library. For a
+the number of Wine processes instead of listing every helper process. The
+launcher then queries Wine's process list and automatically passes the matching
+Windows PID to xdbg when there is one clear game process. If several game
+processes exist, it shows their paths/PIDs so you can choose before xdbg opens.
+Launch asks only for the `.exe` path when it is inside a Steam library. For a
 non-Steam `.exe`, it shows a prefix chooser. Any CLI flag skips this menu.
 
 ### Attach to a running Steam game
@@ -69,9 +72,10 @@ process does not expose Steam's compatdata environment or when using
 ./launch-xdbg.sh --appid 123456 --start-game --wait 120
 ```
 
-`--start-game` starts the game normally with Steam, then waits for it. In xdbg,
-open **Attach** (`Alt+A`) and select the actual game executable if the game
-has several Windows helper processes.
+`--start-game` starts the game normally with Steam, then waits for it. The
+launcher attempts the same Windows-PID selection after the game starts; if it
+cannot identify one process, open **Attach** (`Alt+A`) and select the actual
+game executable rather than a launcher/helper.
 
 ### Launch before the target runs
 
@@ -119,9 +123,11 @@ The script recovers Proton, prefix, display and session details, then invokes:
 /path/to/Proton/proton runinprefix /path/to/x32dbg.exe
 ```
 
-This reuses the game's `wineserver`, so Attach can see the process. Closing xdbg
-ends the launcher. The Desktop shortcuts use a dedicated Konsole without
-`--hold`; Ctrl+C or closing that terminal sends a cleanup signal to Proton.
+This reuses the game's `wineserver`, so Attach can see the process. In attach
+mode it also asks Proton's `winedbg` for the Windows process list and uses
+`xdbg -p PID` when one matching game process is unambiguous. Closing xdbg ends
+the launcher. The Desktop shortcuts use a dedicated Konsole without `--hold`;
+Ctrl+C or closing that terminal sends a cleanup signal to Proton.
 
 ## Troubleshooting
 
@@ -130,8 +136,8 @@ ends the launcher. The Desktop shortcuts use a dedicated Konsole without
 - **No automatic Attach detection:** use native Steam and pass `--appid APPID`
   if the running process does not expose `STEAM_COMPAT_DATA_PATH`.
 - **Several Attach entries:** the launcher groups Wine processes by AppID, but
-  xdbg's own dialog can still show launchers and helpers. Select the actual
-  target executable, not `wineserver` or a launcher.
+  it may find several matching Windows processes. Choose the process whose
+  path is the real game executable; `wineserver` and launchers are not targets.
 - **Wrong debugger architecture:** use `x32dbg.exe` for PE32 targets and
   `x64dbg.exe` for PE32+ targets. Launch mode rejects a mismatch before Proton
   starts.
