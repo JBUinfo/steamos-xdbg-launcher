@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Run a sibling x32dbg/x64dbg through the Proton instance used by a Steam game.
-# Keep this script outside Flatpak: the game and debugger must share wineserver.
+# Run a sibling x32dbg/x64dbg through a Proton prefix on SteamOS.
+# Keep this script outside Flatpak when attaching to a Steam game so the game
+# and debugger share the same wineserver.
 
 set -euo pipefail
 
@@ -12,6 +13,12 @@ appid="${XDBG_APPID:-${SteamAppId:-${SteamGameId:-}}}"
 debugger_override=""
 proton_override="${XDBG_PROTON_PATH:-}"
 steam_root_override="${XDBG_STEAM_ROOT:-}"
+compat_override="${XDBG_COMPATDATA_PATH:-}"
+prefix_override="${XDBG_WINEPREFIX:-}"
+launch_exe=""
+target_cmdline=""
+target_cwd=""
+launch_mode=0
 start_game=0
 check_only=0
 wait_seconds=90
@@ -20,18 +27,27 @@ debugger_args=()
 
 usage() {
     cat <<'EOF'
-Usage: ./launch-xdbg.sh --appid APPID [options] [-- XDBG_ARGS...]
+Usage:
+  ./launch-xdbg.sh [--appid APPID] [options] [-- XDBG_ARGS...]
+  ./launch-xdbg.sh --launch EXE --compatdata DIR --proton PATH [options]
 
-The game should be running in native Steam. The script detects its Proton
-prefix and launches the sibling x32dbg.exe or x64dbg.exe with runinprefix.
-The AppID selects the exact compatdata/prefix and wineserver to share.
+Attach mode (default) expects a game running in native Steam. The script
+detects its Proton prefix and launches the sibling debugger with runinprefix.
 If --appid is omitted, installed Steam apps are listed for interactive choice.
+Use --launch to start any Windows executable at its entry point; that mode
+does not need a running game, but it needs an explicit Proton compatdata/prefix
+unless an AppID is supplied.
 
 Options:
   --appid APPID       Steam AppID (also the first positional argument)
   --debugger FILE     Sibling x32dbg.exe or x64dbg.exe (auto-detected)
   --proton PATH       Proton directory or proton script
   --steam-root PATH   Alternate Steam root
+  --compatdata DIR    Proton compatdata directory (contains pfx/)
+  --prefix DIR        Proton prefix directory (must be compatdata/pfx)
+  --launch EXE        Start EXE through xdbg before it runs (no game needed)
+  --target-cmdline S  Command-line string for --launch
+  --target-cwd DIR    Working directory for --launch
   --start-game        Start the AppID with Steam when it is not running
   --wait SECONDS      Wait for --start-game (default: 90, max: 600)
   --log FILE          Append launcher and Proton output to FILE
@@ -42,12 +58,17 @@ Examples:
   ./launch-xdbg.sh --appid 123456
   ./launch-xdbg.sh 123456 --debugger x32dbg.exe
   ./launch-xdbg.sh --appid 123456 --debugger x64dbg.exe --start-game
+  ./launch-xdbg.sh --launch ./tool.exe \
+      --compatdata "$HOME/.local/share/Steam/steamapps/compatdata/123456" \
+      --proton "$HOME/.local/share/Steam/steamapps/common/Proton 11.0"
 
 Find an AppID in the Steam Store URL (/app/<id>/) or in
 steamapps/appmanifest_<id>.acf.
 
-Arguments after -- are passed unchanged to xdbg. Match the debugger bitness
-to the Windows process (32-bit game -> x32dbg.exe, 64-bit game -> x64dbg.exe).
+Arguments after -- are passed unchanged to xdbg in attach mode. Match the
+debugger bitness to the Windows process (32-bit -> x32dbg.exe, 64-bit ->
+x64dbg.exe). In --launch mode use --target-cmdline and --target-cwd for the
+target's arguments and working directory.
 EOF
 }
 
@@ -245,6 +266,39 @@ locate_prefix() {
     steam_root=$(norm "$steam_root")
 }
 
+locate_explicit_prefix() {
+    compat_path="" prefix_path="" steam_root=""
+
+    if [[ -n "$compat_override" ]]; then
+        compat_path=$(norm "$compat_override")
+        prefix_path=$(norm "${prefix_override:-$compat_path/pfx}")
+        [[ "$prefix_path" == "$compat_path/pfx" ]] || \
+            die "--prefix must be exactly --compatdata/pfx when both are supplied"
+    elif [[ -n "$prefix_override" ]]; then
+        prefix_path=$(norm "$prefix_override")
+        [[ "$prefix_path" == */pfx ]] || \
+            die "--prefix must point to Proton's compatdata/pfx directory; use --compatdata for its parent"
+        compat_path=${prefix_path%/pfx}
+    else
+        return 1
+    fi
+
+    [[ -d "$compat_path" ]] || die "Compatdata not found: $compat_path"
+    [[ -d "$prefix_path" ]] || die "Wine prefix not found: $prefix_path"
+
+    # Recover a Steam root/AppID when the path follows Steam's normal layout.
+    if [[ "$compat_path" =~ ^(.+)/steamapps/compatdata/([0-9]+)$ ]]; then
+        local inferred_root=${BASH_REMATCH[1]} inferred_appid=${BASH_REMATCH[2]}
+        if [[ -n "$appid" && "$appid" != "$inferred_appid" ]]; then
+            die "AppID $appid does not match compatdata path $inferred_appid"
+        fi
+        appid=$inferred_appid
+        steam_root=$(norm "${steam_root_override:-$inferred_root}")
+    else
+        steam_root=$(norm "$steam_root_override")
+    fi
+}
+
 config_proton() {
     local f="$compat_path/config_info" hint root
     [[ -r "$f" ]] || return 0
@@ -332,6 +386,16 @@ while (($#)); do
         --proton=*|--proton-path=*) proton_override=${1#*=}; shift ;;
         --steam-root) (($# >= 2)) || die "--steam-root needs a value"; steam_root_override=$2; shift 2 ;;
         --steam-root=*) steam_root_override=${1#*=}; shift ;;
+        --compatdata|--compat-data) (($# >= 2)) || die "$1 needs a value"; compat_override=$2; shift 2 ;;
+        --compatdata=*|--compat-data=*) compat_override=${1#*=}; shift ;;
+        --prefix|--wineprefix) (($# >= 2)) || die "$1 needs a value"; prefix_override=$2; shift 2 ;;
+        --prefix=*|--wineprefix=*) prefix_override=${1#*=}; shift ;;
+        --launch|--target) (($# >= 2)) || die "$1 needs an executable"; launch_exe=$2; launch_mode=1; shift 2 ;;
+        --launch=*|--target=*) launch_exe=${1#*=}; launch_mode=1; shift ;;
+        --target-cmdline) (($# >= 2)) || die "--target-cmdline needs a value"; target_cmdline=$2; shift 2 ;;
+        --target-cmdline=*) target_cmdline=${1#*=}; shift ;;
+        --target-cwd) (($# >= 2)) || die "--target-cwd needs a directory"; target_cwd=$2; shift 2 ;;
+        --target-cwd=*) target_cwd=${1#*=}; shift ;;
         --start-game) start_game=1; shift ;;
         --wait) (($# >= 2)) || die "--wait needs a number"; wait_seconds=$2; shift 2 ;;
         --wait=*) wait_seconds=${1#*=}; shift ;;
@@ -347,6 +411,24 @@ done
 is_uint "$wait_seconds" || die "--wait must be an integer"
 (( wait_seconds <= 600 )) || die "--wait cannot exceed 600 seconds"
 
+if (( launch_mode )); then
+    [[ -n "$launch_exe" ]] || die "--launch needs an executable"
+    # Accept a host path (the usual case) and also a Wine-style Windows path.
+    if [[ "$launch_exe" != /* && ! "$launch_exe" =~ ^[A-Za-z]:[\\/].* ]]; then
+        launch_exe="$PWD/$launch_exe"
+    fi
+    if [[ "$launch_exe" != *:* ]]; then
+        [[ -f "$launch_exe" ]] || die "Launch target not found: $launch_exe"
+    fi
+    if [[ -n "$target_cwd" && "$target_cwd" != *:* ]]; then
+        [[ "$target_cwd" == /* ]] || target_cwd="$PWD/$target_cwd"
+        [[ -d "$target_cwd" ]] || die "Target working directory not found: $target_cwd"
+    fi
+    (( start_game == 0 )) || die "--start-game cannot be combined with --launch"
+    ((${#debugger_args[@]} == 0)) || \
+        die "Do not pass xdbg arguments after -- with --launch; use --target-cmdline/--target-cwd"
+fi
+
 debugger_path=$(find_debugger)
 [[ -f "$debugger_path" ]] || die "Debugger not found: $debugger_path"
 debugger_dir=$(cd -- "$(dirname -- "$debugger_path")" && pwd -P) || die "Cannot access debugger directory"
@@ -357,35 +439,52 @@ if [[ -n "$log_file" ]]; then
 fi
 
 discover_roots
-if [[ -z "$appid" ]]; then
-    choose_appid
-fi
-[[ -n "$appid" ]] || die "Set --appid APPID"
-is_uint "$appid" || die "AppID must be numeric: $appid"
-scan_game
-if [[ -z "$game_pid" && "$start_game" == 1 ]]; then
-    recover_gui
-    steam_cmd=$(command -v steam || true)
-    [[ -n "$steam_cmd" ]] || die "steam command not found for --start-game"
-    [[ -n "$gui_display" || -n "$gui_wayland" ]] || die "No graphical session found"
-    say "Starting Steam AppID $appid..."
-    "$steam_cmd" -applaunch "$appid" >/dev/null 2>&1 &
-    for (( waited=1; waited<=wait_seconds; waited++ )); do
-        sleep 1
-        scan_game
-        [[ -n "$game_pid" ]] && break
-        (( waited % 5 == 0 )) && say "Waiting for the game ($waited/$wait_seconds s)..."
-    done
-fi
+if (( launch_mode )); then
+    if [[ -n "$compat_override" || -n "$prefix_override" ]]; then
+        locate_explicit_prefix
+    else
+        [[ -n "$appid" ]] || choose_appid
+        [[ -n "$appid" ]] || die "Set --appid APPID or pass --compatdata/--prefix"
+        is_uint "$appid" || die "AppID must be numeric: $appid"
+        locate_prefix || die "Compatdata not found for AppID $appid; pass --compatdata DIR"
+    fi
+else
+    if [[ -z "$appid" ]]; then
+        choose_appid
+    fi
+    [[ -n "$appid" ]] || die "Set --appid APPID"
+    is_uint "$appid" || die "AppID must be numeric: $appid"
+    scan_game
+    if [[ -z "$game_pid" && "$start_game" == 1 ]]; then
+        recover_gui
+        steam_cmd=$(command -v steam || true)
+        [[ -n "$steam_cmd" ]] || die "steam command not found for --start-game"
+        [[ -n "$gui_display" || -n "$gui_wayland" ]] || die "No graphical session found"
+        say "Starting Steam AppID $appid..."
+        "$steam_cmd" -applaunch "$appid" >/dev/null 2>&1 &
+        for (( waited=1; waited<=wait_seconds; waited++ )); do
+            sleep 1
+            scan_game
+            [[ -n "$game_pid" ]] && break
+            (( waited % 5 == 0 )) && say "Waiting for the game ($waited/$wait_seconds s)..."
+        done
+    fi
 
-discover_roots
-scan_game
-locate_prefix || true
+    discover_roots
+    scan_game
+    locate_prefix || true
+fi
 recover_gui
 
 say "Debugger: $debugger_path"
-say "AppID: $appid"
-[[ -n "$game_pid" ]] && say "Detected Wine process: Linux PID $game_pid" || say "Game process: not found"
+if (( launch_mode )); then
+    say "Mode: launch before entry point"
+    say "Launch target: $launch_exe"
+else
+    say "Mode: attach to running game"
+fi
+[[ -n "$appid" ]] && say "AppID: $appid"
+[[ -n "$game_pid" ]] && say "Detected Wine process: Linux PID $game_pid" || say "Game process: not used"
 [[ -n "$compat_path" ]] && say "Compatdata: $compat_path"
 [[ -n "$prefix_path" ]] && say "WINEPREFIX: $prefix_path"
 [[ -n "$steam_root" ]] && say "Steam root: $steam_root"
@@ -396,14 +495,25 @@ say "WAYLAND_DISPLAY: ${gui_wayland:-<empty>}"
 say "XDG_RUNTIME_DIR: ${gui_runtime:-<empty>}"
 
 if (( check_only )); then
-    [[ -n "$game_pid" ]] && say "Check: game is running." || say "Check: game is not running."
-    [[ -n "$compat_path" ]] && say "Check: compatdata found." || warn "No compatdata found; install the game in Steam."
+    if (( launch_mode )); then
+        say "Check: launch target and Proton prefix are ready."
+    else
+        [[ -n "$game_pid" ]] && say "Check: game is running." || say "Check: game is not running."
+    fi
+    [[ -n "$compat_path" ]] && say "Check: compatdata found." || warn "No compatdata found; install the game in Steam or pass --compatdata."
     exit 0
 fi
 
-[[ -n "$game_pid" ]] || die "Game is not running; launch it in Steam or use --start-game"
-[[ -n "$compat_path" && -d "$compat_path" ]] || die "Compatdata not found for AppID $appid"
+if [[ -z "$compat_path" || ! -d "$compat_path" ]]; then
+    if (( launch_mode )); then
+        die "Compatdata not found; pass --compatdata DIR or --prefix DIR"
+    fi
+    die "Compatdata not found for AppID $appid"
+fi
 [[ -d "$prefix_path" ]] || die "Wine prefix not found: $prefix_path"
+if (( ! launch_mode )); then
+    [[ -n "$game_pid" ]] || die "Game is not running; launch it in Steam or use --start-game"
+fi
 
 [[ -n "$proton_override" ]] || proton_override=$game_proton
 [[ -n "$proton_override" ]] || proton_override=$(config_proton || true)
@@ -419,7 +529,16 @@ if [[ -n "$gui_display" && -n "$gui_xauth" && ! -e "$gui_xauth" ]]; then
 fi
 
 export WINEPREFIX="$prefix_path" STEAM_COMPAT_DATA_PATH="$compat_path"
-export STEAM_COMPAT_CLIENT_INSTALL_PATH="$steam_root" SteamAppId="$appid" SteamGameId="$appid"
+if [[ -n "$steam_root" ]]; then
+    export STEAM_COMPAT_CLIENT_INSTALL_PATH="$steam_root"
+else
+    unset STEAM_COMPAT_CLIENT_INSTALL_PATH || true
+fi
+if [[ -n "$appid" ]]; then
+    export SteamAppId="$appid" SteamGameId="$appid"
+else
+    unset SteamAppId SteamGameId || true
+fi
 [[ -z "$gui_display" ]] || export DISPLAY="$gui_display"
 [[ -z "$gui_wayland" ]] || export WAYLAND_DISPLAY="$gui_wayland"
 [[ -z "$gui_xauth" ]] || export XAUTHORITY="$gui_xauth"
@@ -429,10 +548,32 @@ export STEAM_COMPAT_CLIENT_INSTALL_PATH="$steam_root" SteamAppId="$appid" SteamG
 
 before=$(count_wineservers "$prefix_path")
 say "wineserver(s) before xdbg: $before"
-say "Launching host Proton with runinprefix; keep the game open."
+if (( launch_mode )); then
+    say "Launching target through xdbg before its entry point."
+    launch_args=("$launch_exe")
+    # Keep the empty command-line slot when only a working directory is set;
+    # xdbg treats these as positional arguments (target, command line, cwd).
+    [[ -z "$target_cmdline" && -z "$target_cwd" ]] || launch_args+=("$target_cmdline")
+    [[ -z "$target_cwd" ]] || launch_args+=("$target_cwd")
+else
+    say "Launching host Proton with runinprefix; keep the game open."
+    launch_args=("${debugger_args[@]}")
+fi
+
+proton_pid=""
+stop_debugger() {
+    local code=${1:-130}
+    if [[ -n "${proton_pid:-}" ]] && kill -0 "$proton_pid" 2>/dev/null; then
+        kill -TERM "$proton_pid" 2>/dev/null || true
+        wait "$proton_pid" 2>/dev/null || true
+    fi
+    exit "$code"
+}
+trap 'stop_debugger 130' INT
+trap 'stop_debugger 143' HUP TERM
 
 set +e
-(cd -- "$debugger_dir" && "$proton_script" runinprefix "$debugger_path" "${debugger_args[@]}") &
+(cd -- "$debugger_dir" && exec "$proton_script" runinprefix "$debugger_path" "${launch_args[@]}") &
 proton_pid=$!
 set -e
 sleep 2
