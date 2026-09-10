@@ -19,9 +19,9 @@ use **Attach** while it is running.
 - Use `x32dbg.exe` for 32-bit targets and `x64dbg.exe` for 64-bit targets.
 - Steam games must be started through native Steam so the game and debugger
   share `wineserver`; Steam Flatpak is rejected for Attach mode.
-- Launch mode uses an existing Proton prefix for standalone executables. If no
-  `--compatdata` or `--prefix` is supplied, the launcher lets you choose an
-  installed prefix, so you do not need to find its path manually.
+- Launch mode creates and reuses a private Proton prefix for standalone
+  executables, so no AppID or compatdata path is required. Use
+  `--compatdata`/`--prefix` only for a custom prefix.
 
 The launcher does not change game files or bypass anti-cheat. Debugging can
 make a game or the desktop unstable; use an offline/test setup.
@@ -61,7 +61,7 @@ the number of Wine processes instead of listing every helper process. The
 launcher then queries Wine's process list and automatically passes the matching
 Windows PID to xdbg when there is one clear game process. If several game
 processes exist, it shows their paths/PIDs so you can choose before xdbg opens.
-Launch asks for a standalone `.exe` path and, when needed, a Proton prefix. It
+Launch asks for a standalone `.exe` path and uses its private Proton prefix. It
 opens xdbg with the target paused; it does not start Steam games. Any CLI flag
 skips this menu.
 
@@ -91,15 +91,14 @@ paused before its entry point, so you can inspect it without executing it; press
 Run/F9 only when you want to start that standalone program.
 
 For example, launch Windows Notepad without supplying an AppID or a
-`--compatdata` path:
+`--compatdata` path. The prefix is created under
+`$XDG_DATA_HOME/xdbg/proton-prefix` (or `~/.local/share/xdbg/proton-prefix`):
 
 ```bash
 ./launch-xdbg.sh --launch 'C:\Windows\System32\notepad.exe'
 ```
 
-When no `--compatdata` or `--prefix` is provided, the script asks you to choose
-an installed Proton prefix. This avoids a manual compatdata lookup. You can
-still pass `--compatdata`/`--prefix` explicitly for a custom prefix.
+You can still pass `--compatdata`/`--prefix` explicitly for a custom prefix.
 
 Optional target arguments and working directory:
 
@@ -139,13 +138,14 @@ The script recovers Proton, prefix, display and session details, then invokes:
 /path/to/Proton/proton runinprefix /path/to/x32dbg.exe
 ```
 
-This reuses the game's `wineserver`, so Attach can see the process. In attach
-mode it also asks Proton's `winedbg` for the Windows process list and uses
-`xdbg -p PID` when one matching game process is unambiguous. Closing xdbg ends
-the launcher. The Desktop shortcuts use a dedicated Konsole without `--hold`;
-they pause on validation errors so the message remains visible, while normal
-successful exits still close the terminal. Ctrl+C or closing that terminal
-sends a cleanup signal to Proton.
+Attach mode reuses the game's `wineserver`, so xdbg can see the process. Launch
+mode uses the private prefix described above and never asks Steam to create a
+game process. In attach mode the script also asks Proton's `winedbg` for the
+Windows process list and uses `xdbg -p PID` when one matching game process is
+unambiguous. Closing xdbg ends the launcher. The Desktop shortcuts use a
+dedicated Konsole without `--hold`; they pause on validation errors so the
+message remains visible, while normal successful exits still close the
+terminal. Ctrl+C or closing that terminal sends a cleanup signal to Proton.
 
 ## Troubleshooting
 
@@ -162,7 +162,6 @@ sends a cleanup signal to Proton.
 - **"Debugging stopped" or a Steam application-load error:** Steam must create
   the game process. Start it in Steam and use Attach (or `--start-game`); do not
   launch that game's EXE directly from xdbg.
-- **Prefix not found for a standalone launch:** choose an installed Proton
-  prefix, or pass `--compatdata`/`--prefix` explicitly.
-- **Proton not found:** pass `--proton "/path/to/Proton"` explicitly.
+- **Proton not found for a standalone launch:** install a Proton tool, pass
+  `--proton "/path/to/Proton"`, or use `--compatdata`/`--prefix` explicitly.
 - **GUI errors:** run in Desktop Mode and inspect `--log` output.

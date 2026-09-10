@@ -19,6 +19,7 @@ launch_exe=""
 target_cmdline=""
 target_cwd=""
 launch_mode=0
+standalone_prefix_mode=0
 interactive_menu=0
 start_game=0
 check_only=0
@@ -39,8 +40,9 @@ If --appid is omitted, running Steam games are detected and grouped by AppID;
 the matching Windows PID is passed to xdbg when it can be identified.
 Use --launch to open a standalone Windows executable in xdbg paused before its
 entry point; that mode does not start Steam games. Steam games must be started
-through Steam and debugged with Attach. If no --compatdata/--prefix is supplied
-for a standalone target, the launcher offers an interactive prefix choice.
+through Steam and debugged with Attach. Standalone targets use a private Proton
+prefix automatically; pass --compatdata/--prefix only when a custom prefix is
+needed.
 When run with no arguments in a terminal, the script first asks whether to
 attach or launch. Flags skip that menu.
 
@@ -565,6 +567,45 @@ locate_explicit_prefix() {
     fi
 }
 
+find_default_proton() {
+    local root candidate name
+    local -a stable=() fallback=()
+    for root in "${steam_roots[@]}"; do
+        for candidate in "$root"/steamapps/common/Proton*/proton; do
+            [[ -f "$candidate" ]] || continue
+            name=${candidate%/proton}
+            name=${name##*/}
+            case "$name" in
+                Proton\ [0-9]*.[0-9]*) stable+=("$candidate") ;;
+                *) fallback+=("$candidate") ;;
+            esac
+        done
+    done
+
+    if ((${#stable[@]} > 0)); then
+        printf '%s\n' "${stable[@]}" | sort -V | tail -n 1
+    elif ((${#fallback[@]} > 0)); then
+        printf '%s\n' "${fallback[@]}" | sort -V | tail -n 1
+    fi
+}
+
+locate_standalone_prefix() {
+    local data_home=${XDG_DATA_HOME:-${HOME:-$PWD/.local/share}}
+    compat_path=$(norm "$data_home/xdbg/proton-prefix")
+    prefix_path="$compat_path/pfx"
+    if [[ -n "$steam_root_override" ]]; then
+        steam_root=$(norm "$steam_root_override")
+    else
+        steam_root=$(norm "${steam_roots[0]:-}")
+    fi
+    mkdir -p -- "$compat_path" || die "Cannot create standalone Proton prefix: $compat_path"
+    standalone_prefix_mode=1
+    [[ -n "$proton_override" ]] || proton_override=$(find_default_proton || true)
+    [[ -n "$proton_override" ]] || \
+        die "Cannot find an installed Proton version; pass --proton /path/to/Proton"
+    say "Using standalone Proton prefix: $compat_path"
+}
+
 config_proton() {
     local f="$compat_path/config_info" hint root
     [[ -r "$f" ]] || return 0
@@ -780,10 +821,12 @@ if (( launch_mode )); then
                 say "Detected Steam game: $(app_name_for_id "$appid") (AppID $appid)."
             fi
         fi
-        [[ -n "$appid" ]] || choose_appid
-        [[ -n "$appid" ]] || die "Set --appid APPID or pass --compatdata/--prefix"
-        is_uint "$appid" || die "AppID must be numeric: $appid"
-        locate_prefix || die "Compatdata not found for AppID $appid; pass --compatdata DIR"
+        if [[ -n "$appid" ]]; then
+            is_uint "$appid" || die "AppID must be numeric: $appid"
+            locate_prefix || die "Compatdata not found for AppID $appid; pass --compatdata DIR"
+        else
+            locate_standalone_prefix
+        fi
     fi
 else
     if [[ -z "$appid" ]]; then
@@ -863,7 +906,13 @@ if [[ -z "$compat_path" || ! -d "$compat_path" ]]; then
     fi
     die "Compatdata not found for AppID $appid"
 fi
-[[ -d "$prefix_path" ]] || die "Wine prefix not found: $prefix_path"
+if [[ ! -d "$prefix_path" ]]; then
+    if (( launch_mode && standalone_prefix_mode )); then
+        say "The standalone Proton prefix will be initialized on first run."
+    else
+        die "Wine prefix not found: $prefix_path"
+    fi
+fi
 if (( ! launch_mode )); then
     [[ -n "$game_pid" ]] || die "Game is not running; launch it in Steam or use --start-game"
 fi
