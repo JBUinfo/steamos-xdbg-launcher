@@ -105,13 +105,20 @@ Optional target arguments and working directory:
   --target-cmdline 'one two' --target-cwd "/path/to/tool-dir"
 ```
 
-The launcher passes the working directory with xdbg's `-workingDir` option
-and places target arguments after xdbg's `--` separator, so they are not
-mistaken for extra xdbg positional arguments.
+The launcher converts Linux paths to the prefix's Windows drive mapping, then
+passes the working directory with xdbg's `-workingDir` option. Target
+arguments go after xdbg's `--` separator, so they are not mistaken for extra
+xdbg positional arguments.
+
+ScyllaHide stays installed but is skipped by default because its hooks can
+terminate debugged processes under Proton. Use `--scyllahide` (or
+`XDBG_DISABLE_SCYLLAHIDE=0`) when a target needs it. The Desktop shortcuts
+explicitly keep it disabled for a stable default.
 
 The target path can be a Linux path or a Wine-style Windows path. A Steam
-game may still need its Steam bootstrap; use attach mode plus `--start-game`
-for that case. Native Linux programs are not supported by xdbg.
+game may still require Steam's bootstrap and refuse a direct EXE launch; use
+attach mode plus `--start-game` for that case. Native Linux programs are not
+supported by xdbg.
 
 Host-path targets use their containing directory as the default working
 directory. Override it with `--target-cwd` when a program needs another one.
@@ -147,6 +154,9 @@ sends a cleanup signal to Proton.
 - **Wrong debugger architecture:** use `x32dbg.exe` for PE32 targets and
   `x64dbg.exe` for PE32+ targets. Launch mode rejects a mismatch before Proton
   starts.
+- **"Debugging stopped" or a Steam application-load error:** the game
+  requires Steam to create it. Start it from Steam, then use attach mode, or
+  use `--start-game` in attach mode; do not launch that game's EXE directly.
 - **Steam path not detected:** verify that the executable is below
   `steamapps/common/<installdir>` and that its `appmanifest_<id>.acf` exists;
   otherwise pass `--appid` or `--compatdata` explicitly.

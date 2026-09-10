@@ -24,6 +24,7 @@ start_game=0
 check_only=0
 wait_seconds=90
 log_file=""
+disable_scyllahide="${XDBG_DISABLE_SCYLLAHIDE:-1}"
 debugger_args=()
 
 usage() {
@@ -56,6 +57,8 @@ Options:
   --start-game        Start the AppID with Steam when it is not running
   --wait SECONDS      Wait for --start-game (default: 90, max: 600)
   --log FILE          Append launcher and Proton output to FILE
+  --no-scyllahide     Skip ScyllaHide for this run (useful under Proton)
+  --scyllahide        Enable ScyllaHide hooks for this run (may be unstable)
   --check             Inspect only; do not launch xdbg
   -h, --help          Show this help
 
@@ -131,6 +134,19 @@ resolve_proton() {
     [[ -d "$p" && -f "$p/proton" ]] && p="$p/proton"
     [[ -f "$p" ]] || return 1
     printf '%s' "$p"
+}
+
+to_wine_path() {
+    local path=$1 converted
+    # x64dbg calls CreateProcess inside Wine, so use the prefix's DOS drive
+    # mapping (for example S:\\steamapps\\common\\Game) instead of passing
+    # a host path as the Windows working directory.
+    [[ "$path" == /* ]] || { printf '%s' "$path"; return 0; }
+    converted=$(WINEDEBUG=-all "$proton_script" runinprefix winepath -w "$path" 2>/dev/null) || return 1
+    converted=${converted//$'\r'/}
+    converted=${converted%%$'\n'*}
+    [[ -n "$converted" ]] || return 1
+    printf '%s' "$converted"
 }
 
 steam_roots=()
@@ -666,6 +682,8 @@ while (($#)); do
         --wait=*) wait_seconds=${1#*=}; shift ;;
         --log) (($# >= 2)) || die "--log needs a file"; log_file=$2; shift 2 ;;
         --log=*) log_file=${1#*=}; shift ;;
+        --no-scyllahide) disable_scyllahide=1; shift ;;
+        --scyllahide) disable_scyllahide=0; shift ;;
         --check) check_only=1; shift ;;
         --) shift; debugger_args=("$@"); break ;;
         -*) die "Unknown option: $1 (put xdbg arguments after --)" ;;
@@ -679,6 +697,8 @@ fi
 
 is_uint "$wait_seconds" || die "--wait must be an integer"
 (( wait_seconds <= 600 )) || die "--wait cannot exceed 600 seconds"
+[[ "$disable_scyllahide" == 0 || "$disable_scyllahide" == 1 ]] || \
+    die "XDBG_DISABLE_SCYLLAHIDE must be 0 or 1"
 
 if (( launch_mode )); then
     [[ -n "$launch_exe" ]] || die "--launch needs an executable"
@@ -704,6 +724,36 @@ fi
 debugger_path=$(find_debugger)
 [[ -f "$debugger_path" ]] || die "Debugger not found: $debugger_path"
 debugger_dir=$(cd -- "$(dirname -- "$debugger_path")" && pwd -P) || die "Cannot access debugger directory"
+
+scyllahide_plugin=""
+scyllahide_backup=""
+disable_scyllahide_for_run() {
+    local candidate
+    (( disable_scyllahide == 1 )) || return 0
+    for candidate in \
+        "$debugger_dir/plugins/ScyllaHideX64DBGPlugin.dp32" \
+        "$debugger_dir/plugins/ScyllaHideX64DBGPlugin.dp64"; do
+        [[ -f "$candidate" ]] || continue
+        local backup="${candidate}.lxdbg-disabled-${BASHPID}"
+        [[ ! -e "$backup" ]] || die "ScyllaHide backup already exists: $backup"
+        mv -- "$candidate" "$backup" || \
+            die "Could not disable ScyllaHide: $candidate"
+        scyllahide_plugin=$candidate
+        scyllahide_backup=$backup
+        say "ScyllaHide disabled for this run (set XDBG_DISABLE_SCYLLAHIDE=0 to enable it)."
+        return 0
+    done
+}
+
+restore_scyllahide() {
+    [[ -n "$scyllahide_plugin" && -n "$scyllahide_backup" ]] || return 0
+    if [[ -e "$scyllahide_backup" ]]; then
+        mv -- "$scyllahide_backup" "$scyllahide_plugin" || \
+            warn "Could not restore ScyllaHide: $scyllahide_plugin"
+    fi
+    scyllahide_plugin=""
+    scyllahide_backup=""
+}
 
 if (( launch_mode )); then
     target_bits=$(pe_bitness "$launch_exe" || true)
@@ -853,13 +903,24 @@ if (( ! launch_mode )); then
     select_attach_process
 fi
 
+launch_target_arg="$launch_exe"
+launch_cwd_arg="$target_cwd"
+if (( launch_mode )); then
+    launch_target_arg=$(to_wine_path "$launch_exe") || \
+        die "Could not convert launch target to a Wine path: $launch_exe"
+    if [[ -n "$target_cwd" ]]; then
+        launch_cwd_arg=$(to_wine_path "$target_cwd") || \
+            die "Could not convert target working directory to a Wine path: $target_cwd"
+    fi
+fi
+
 before=$(count_wineservers "$prefix_path")
 say "wineserver(s) before xdbg: $before"
 if (( launch_mode )); then
     say "Launching target through xdbg before its entry point."
     launch_args=()
-    [[ -z "$target_cwd" ]] || launch_args+=(-workingDir "$target_cwd")
-    launch_args+=("$launch_exe")
+    [[ -z "$launch_cwd_arg" ]] || launch_args+=(-workingDir "$launch_cwd_arg")
+    launch_args+=("$launch_target_arg")
     if [[ -n "$target_cmdline" ]]; then
         # Modern x64dbg accepts target arguments after the -- delimiter.
         launch_args+=(-- "$target_cmdline")
@@ -881,10 +942,14 @@ stop_debugger() {
         kill -TERM "$proton_pid" 2>/dev/null || true
         wait "$proton_pid" 2>/dev/null || true
     fi
+    restore_scyllahide
     exit "$code"
 }
+trap 'restore_scyllahide' EXIT
 trap 'stop_debugger 130' INT
 trap 'stop_debugger 143' HUP TERM
+
+disable_scyllahide_for_run
 
 set +e
 (cd -- "$debugger_dir" && exec "$proton_script" runinprefix "$debugger_path" "${launch_args[@]}") &
@@ -909,4 +974,5 @@ set +e
 wait "$proton_pid"
 status=$?
 set -e
+restore_scyllahide
 exit "$status"
