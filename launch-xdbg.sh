@@ -66,11 +66,21 @@ env_value() {
 proc_env() { cat -- "$1" 2>/dev/null | tr '\0' '\n' || true; }
 proc_cmd() { cat -- "$1" 2>/dev/null | tr '\0' ' ' || true; }
 
-proton_from_cmd() {
-    local cmd=$1
-    if [[ "$cmd" =~ (/.*/proton)[[:space:]]+(waitforexitandrun|runinprefix|run)([[:space:]]|$) ]]; then
-        printf '%s' "${BASH_REMATCH[1]}"
-    fi
+proton_from_cmdline() {
+    local file=$1 arg next i
+    local -a args=()
+    [[ -r "$file" ]] || return 0
+    while IFS= read -r -d '' arg; do
+        args+=("$arg")
+    done < <(cat -- "$file" 2>/dev/null)
+    for ((i=0; i + 1 < ${#args[@]}; i++)); do
+        arg=${args[i]}
+        next=${args[i + 1]}
+        [[ "$arg" == */proton ]] || continue
+        case "$next" in
+            waitforexitandrun|runinprefix|run) printf '%s' "$arg"; return ;;
+        esac
+    done
 }
 
 resolve_proton() {
@@ -195,7 +205,7 @@ scan_game() {
         [[ -n "$prefix" ]] || prefix="$compat/pfx"
         root=$(env_value "$blob" STEAM_COMPAT_CLIENT_INSTALL_PATH)
         [[ -n "$root" ]] || root=${compat%"/steamapps/compatdata/$appid"}
-        proton=$(proton_from_cmd "$cmd" || true)
+        proton=$(proton_from_cmdline "/proc/$pid/cmdline" || true)
         if [[ -z "$proton" ]]; then
             proton=$(env_value "$blob" PROTON_PATH)
             [[ -d "$proton" ]] && proton="$proton/proton"
