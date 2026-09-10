@@ -80,7 +80,13 @@ directory.
 EOF
 }
 
-die()  { printf 'Error: %s\n' "$*" >&2; exit 1; }
+die() {
+    printf 'Error: %s\n' "$*" >&2
+    if [[ "${XDBG_PAUSE_ON_ERROR:-0}" == 1 && -t 0 ]]; then
+        read -r -p 'Press Enter to close this terminal... ' _ || true
+    fi
+    exit 1
+}
 warn() { printf 'Warning: %s\n' "$*" >&2; }
 say()  { printf '%s\n' "$*"; }
 
@@ -851,11 +857,13 @@ before=$(count_wineservers "$prefix_path")
 say "wineserver(s) before xdbg: $before"
 if (( launch_mode )); then
     say "Launching target through xdbg before its entry point."
-    launch_args=("$launch_exe")
-    # Keep the empty command-line slot when only a working directory is set;
-    # xdbg treats these as positional arguments (target, command line, cwd).
-    [[ -z "$target_cmdline" && -z "$target_cwd" ]] || launch_args+=("$target_cmdline")
-    [[ -z "$target_cwd" ]] || launch_args+=("$target_cwd")
+    launch_args=()
+    [[ -z "$target_cwd" ]] || launch_args+=(-workingDir "$target_cwd")
+    launch_args+=("$launch_exe")
+    if [[ -n "$target_cmdline" ]]; then
+        # Modern x64dbg accepts target arguments after the -- delimiter.
+        launch_args+=(-- "$target_cmdline")
+    fi
 else
     say "Launching host Proton with runinprefix; keep the game open."
     if [[ -n "$attach_windows_pid" && ${#debugger_args[@]} -eq 0 ]]; then

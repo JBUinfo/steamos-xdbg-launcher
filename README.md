@@ -105,6 +105,10 @@ Optional target arguments and working directory:
   --target-cmdline 'one two' --target-cwd "/path/to/tool-dir"
 ```
 
+The launcher passes the working directory with xdbg's `-workingDir` option
+and places target arguments after xdbg's `--` separator, so they are not
+mistaken for extra xdbg positional arguments.
+
 The target path can be a Linux path or a Wine-style Windows path. A Steam
 game may still need its Steam bootstrap; use attach mode plus `--start-game`
 for that case. Native Linux programs are not supported by xdbg.
@@ -127,7 +131,9 @@ This reuses the game's `wineserver`, so Attach can see the process. In attach
 mode it also asks Proton's `winedbg` for the Windows process list and uses
 `xdbg -p PID` when one matching game process is unambiguous. Closing xdbg ends
 the launcher. The Desktop shortcuts use a dedicated Konsole without `--hold`;
-Ctrl+C or closing that terminal sends a cleanup signal to Proton.
+they pause on validation errors so the message remains visible, while normal
+successful exits still close the terminal. Ctrl+C or closing that terminal
+sends a cleanup signal to Proton.
 
 ## Troubleshooting
 
