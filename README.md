@@ -52,7 +52,7 @@ Run the script with no arguments (or use a Desktop shortcut):
 
 ```text
 1) Attach to a running Steam game
-2) Launch a Windows executable through xdbg
+2) Open a Windows executable before it runs
 ```
 
 Attach detects running Steam games first. If one game is running it is selected
@@ -61,9 +61,12 @@ the number of Wine processes instead of listing every helper process. The
 launcher then queries Wine's process list and automatically passes the matching
 Windows PID to xdbg when there is one clear game process. If several game
 processes exist, it shows their paths/PIDs so you can choose before xdbg opens.
-Launch asks for a standalone `.exe` path and uses its private Proton prefix. It
-opens xdbg with the target paused; it does not start Steam games. Any CLI flag
-skips this menu.
+Launch opens a file picker in Downloads (KDE's `kdialog`, or `zenity` when
+available), so a downloaded `.exe` can be selected without knowing its Linux
+path. Cancel the picker to type or drag a path. It uses the private Proton
+prefix, opens xdbg paused, and does not start Steam games. Any CLI flag skips
+this menu. You can also run `./launch-xdbg.sh --launch` without a path to open
+the picker directly.
 
 ### Attach to a running Steam game
 
@@ -96,9 +99,15 @@ For example, launch Windows Notepad without supplying an AppID or a
 
 ```bash
 ./launch-xdbg.sh --launch 'C:\Windows\System32\notepad.exe'
+# Or omit the path and choose a downloaded .exe in the file picker:
+./launch-xdbg.sh --launch
 ```
 
-You can still pass `--compatdata`/`--prefix` explicitly for a custom prefix.
+For CLI paths containing spaces, quoting is recommended; the launcher also
+joins unquoted path words until the next option. Bash removes unquoted Windows
+backslashes, so use quotes or forward slashes (`C:/Windows/System32/notepad.exe`)
+for Windows-style paths. You can still pass `--compatdata`/`--prefix` explicitly
+for a custom prefix.
 
 Optional target arguments and working directory:
 

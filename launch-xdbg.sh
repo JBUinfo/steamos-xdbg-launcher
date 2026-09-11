@@ -32,7 +32,7 @@ usage() {
     cat <<'EOF'
 Usage:
   ./launch-xdbg.sh [--appid APPID] [options] [-- XDBG_ARGS...]
-  ./launch-xdbg.sh --launch EXE [options]
+  ./launch-xdbg.sh --launch [EXE] [options]
 
 Attach mode (default) expects a game running in native Steam. The script
 detects its Proton prefix and launches the sibling debugger with runinprefix.
@@ -44,7 +44,9 @@ through Steam and debugged with Attach. Standalone targets use a private Proton
 prefix automatically; pass --compatdata/--prefix only when a custom prefix is
 needed.
 When run with no arguments in a terminal, the script first asks whether to
-attach or launch. Flags skip that menu.
+attach or launch. Launch opens a KDE/Zenity file picker when available; cancel
+it to type or drag a path. `--launch` may also omit `EXE` to open that picker;
+flags skip the mode menu.
 
 Options:
   --appid APPID       Steam AppID (also the first positional argument)
@@ -53,7 +55,8 @@ Options:
   --steam-root PATH   Alternate Steam root
   --compatdata DIR    Override the auto-detected compatdata directory
   --prefix DIR        Proton prefix directory (must be compatdata/pfx)
-  --launch EXE        Open a non-game EXE paused before it runs
+  --launch [EXE]      Open a non-game EXE paused before it runs; if omitted,
+                      choose one with the file picker
   --target-cmdline S  Command-line string for --launch
   --target-cwd DIR    Working directory for --launch
   --start-game        Start the AppID with Steam when it is not running
@@ -81,7 +84,8 @@ debugger bitness to the Windows process (32-bit -> x32dbg.exe, 64-bit ->
 x64dbg.exe); launch mode validates this automatically. In --launch mode use
 --target-cmdline and --target-cwd for the target's arguments and working
 directory. A host-path target defaults to its own directory as the working
-directory.
+directory. Unquoted path words are joined until the next option; quote Windows
+backslashes or use forward slashes because Bash removes unquoted backslashes.
 EOF
 }
 
@@ -430,11 +434,41 @@ choose_appid() {
     done
 }
 
+choose_launch_target() {
+    local start_dir selected target
+    start_dir="${HOME:-$PWD}/Downloads"
+    [[ -d "$start_dir" ]] || start_dir="${HOME:-$PWD}"
+
+    say "Select a Windows executable (cancel the file picker to type a path)."
+    selected=""
+    if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+        if command -v kdialog >/dev/null 2>&1; then
+            selected=$(kdialog --getopenfilename "$start_dir" '*.exe' 2>/dev/null || true)
+        elif command -v zenity >/dev/null 2>&1; then
+            selected=$(zenity --file-selection \
+                --title='Select a Windows executable' \
+                --filename="$start_dir/" \
+                --file-filter='Windows executables | *.exe' 2>/dev/null || true)
+        fi
+    fi
+    if [[ -n "$selected" ]]; then
+        launch_exe=$(expand_user_path "$selected")
+        return
+    fi
+
+    while :; do
+        read -r -e -p "Windows EXE path (or drag a file here): " target || die "No target path supplied"
+        target=$(expand_user_path "$target")
+        [[ -n "$target" ]] && { launch_exe=$target; return; }
+        warn "Enter a path to a Windows executable."
+    done
+}
+
 choose_mode() {
-    local choice target
+    local choice
     say "xdbg launcher mode:"
     say "  1) Attach to a running Steam game"
-    say "  2) Launch a Windows executable through xdbg"
+    say "  2) Open a Windows executable before it runs"
     while :; do
         read -r -p "Choose a mode [1-2, 0=cancel]: " choice || die "No selection made"
         case "$choice" in
@@ -444,13 +478,7 @@ choose_mode() {
                 ;;
             2)
                 launch_mode=1
-                while :; do
-                    read -r -e -p "Windows EXE path: " target || die "No target path supplied"
-                    target=$(expand_user_path "$target")
-                    [[ -n "$target" ]] && break
-                    warn "Enter a path to a Windows executable."
-                done
-                launch_exe=$target
+                choose_launch_target
                 return
                 ;;
             0) exit 0 ;;
@@ -590,7 +618,12 @@ find_default_proton() {
 }
 
 locate_standalone_prefix() {
-    local data_home=${XDG_DATA_HOME:-${HOME:-$PWD/.local/share}}
+    local data_home
+    if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+        data_home=$XDG_DATA_HOME
+    else
+        data_home="${HOME:-$PWD}/.local/share"
+    fi
     compat_path=$(norm "$data_home/xdbg/proton-prefix")
     prefix_path="$compat_path/pfx"
     if [[ -n "$steam_root_override" ]]; then
@@ -712,8 +745,30 @@ while (($#)); do
         --compatdata=*|--compat-data=*) compat_override=${1#*=}; shift ;;
         --prefix|--wineprefix) (($# >= 2)) || die "$1 needs a value"; prefix_override=$2; shift 2 ;;
         --prefix=*|--wineprefix=*) prefix_override=${1#*=}; shift ;;
-        --launch|--target) (($# >= 2)) || die "$1 needs an executable"; launch_exe=$2; launch_mode=1; shift 2 ;;
-        --launch=*|--target=*) launch_exe=${1#*=}; launch_mode=1; shift ;;
+        --launch|--target)
+            launch_mode=1
+            if (($# < 2)) || [[ "$2" == -* ]]; then
+                shift
+            else
+                launch_exe=$2
+                shift 2
+                # If a path with spaces was left unquoted, the shell split it
+                # into several words. Join them until the next option.
+                while (($#)) && [[ "$1" != -* ]]; do
+                    launch_exe+=" $1"
+                    shift
+                done
+            fi
+            ;;
+        --launch=*|--target=*)
+            launch_exe=${1#*=}
+            launch_mode=1
+            shift
+            while (($#)) && [[ "$1" != -* ]]; do
+                launch_exe+=" $1"
+                shift
+            done
+            ;;
         --target-cmdline) (($# >= 2)) || die "--target-cmdline needs a value"; target_cmdline=$2; shift 2 ;;
         --target-cmdline=*) target_cmdline=${1#*=}; shift ;;
         --target-cwd) (($# >= 2)) || die "--target-cwd needs a directory"; target_cwd=$2; shift 2 ;;
@@ -736,6 +791,14 @@ if (( interactive_menu )); then
     choose_mode
 fi
 
+if (( launch_mode )) && [[ -z "$launch_exe" ]]; then
+    if [[ -t 0 || -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+        choose_launch_target
+    else
+        die "--launch needs an executable path when no graphical file picker is available"
+    fi
+fi
+
 is_uint "$wait_seconds" || die "--wait must be an integer"
 (( wait_seconds <= 600 )) || die "--wait cannot exceed 600 seconds"
 [[ "$disable_scyllahide" == 0 || "$disable_scyllahide" == 1 ]] || \
@@ -744,6 +807,9 @@ is_uint "$wait_seconds" || die "--wait must be an integer"
 if (( launch_mode )); then
     [[ -n "$launch_exe" ]] || die "--launch needs an executable"
     # Accept a host path (the usual case) and also a Wine-style Windows path.
+    if [[ "$launch_exe" =~ ^[A-Za-z]: && "$launch_exe" != [A-Za-z]:[\\/]* ]]; then
+        die "Windows paths need a separator; quote backslashes or use forward slashes (for example C:/Windows/System32/notepad.exe)"
+    fi
     if [[ "$launch_exe" != /* && ! "$launch_exe" =~ ^[A-Za-z]:[\\/].* ]]; then
         launch_exe="$PWD/$launch_exe"
     fi
