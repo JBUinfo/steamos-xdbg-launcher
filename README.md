@@ -122,6 +122,14 @@ passes the working directory with xdbg's `-workingDir` option. Target
 arguments go after xdbg's `--` separator, so they are not mistaken for extra
 xdbg positional arguments.
 
+Paths already inside a Steam prefix are handled specially. For example,
+`.../steamapps/compatdata/239140/pfx/drive_c/windows/system32/notepad.exe`
+automatically selects AppID `239140` and is passed to xdbg as
+`C:\windows\system32\notepad.exe`; Proton's symlink to its builtin EXE is
+not followed to the wrong Proton AppID. Use the debugger that matches the
+target's PE type (the Proton Notepad example is normally 64-bit, so use the
+x64 script).
+
 ScyllaHide stays installed but is skipped by default because its hooks can
 terminate debugged processes under Proton. Use `--scyllahide` (or
 `XDBG_DISABLE_SCYLLAHIDE=0`) when a target needs it. The Desktop shortcuts
@@ -167,7 +175,7 @@ terminal. Ctrl+C or closing that terminal sends a cleanup signal to Proton.
   path is the real game executable; `wineserver` and launchers are not targets.
 - **Wrong debugger architecture:** use `x32dbg.exe` for PE32 targets and
   `x64dbg.exe` for PE32+ targets. Launch mode rejects a mismatch before Proton
-  starts.
+  starts, including when the target is a symlink inside `compatdata/pfx`.
 - **"Debugging stopped" or a Steam application-load error:** Steam must create
   the game process. Start it in Steam and use Attach (or `--start-game`); do not
   launch that game's EXE directly from xdbg.

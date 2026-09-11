@@ -233,6 +233,16 @@ app_install_dir_for_id() {
 infer_steam_appid() {
     local target=$1 target_real root root_real manifest id installdir game_dir game_real
     [[ "$target" == /* && -f "$target" ]] || return 1
+
+    # A target copied from a Steam prefix is already tied to that AppID.  Check
+    # the path before resolving symlinks: Proton's builtin EXEs (for example
+    # pfx/drive_c/windows/system32/notepad.exe) point into Proton's own
+    # steamapps/common directory, which must not be mistaken for a game.
+    if [[ "$target" =~ /steamapps/compatdata/([0-9]+)/pfx(/|$) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
     target_real=$(readlink -f -- "$target" 2>/dev/null || printf '%s' "$target")
 
     for root in "${steam_roots[@]}"; do
@@ -718,11 +728,31 @@ find_debugger() {
 pe_bitness() {
     local info
     command -v file >/dev/null 2>&1 || return 1
-    info=$(file -b -- "$1" 2>/dev/null || true)
+    # -L follows Proton's symlinks to builtin Windows executables.
+    info=$(file -L -b -- "$1" 2>/dev/null || true)
     case "$info" in
         *PE32+*) printf '64' ;;
         *PE32*) printf '32' ;;
         *) return 1 ;;
+    esac
+}
+
+prefix_path_to_wine() {
+    local path=$1 relative
+    [[ "$path" == "$prefix_path/"* ]] || return 1
+    relative=${path#"$prefix_path/"}
+    case "$relative" in
+        drive_c/*)
+            relative=${relative#drive_c/}
+            relative=${relative//\//\\}
+            printf 'C:\\%s' "$relative"
+            ;;
+        drive_c)
+            printf 'C:\\'
+            ;;
+        *)
+            return 1
+            ;;
     esac
 }
 
@@ -1021,11 +1051,24 @@ fi
 launch_target_arg="$launch_exe"
 launch_cwd_arg="$target_cwd"
 if (( launch_mode )); then
-    launch_target_arg=$(to_wine_path "$launch_exe") || \
-        die "Could not convert launch target to a Wine path: $launch_exe"
+    # Keep paths inside an explicit Steam prefix on its C: drive.  This is
+    # important for Proton builtin EXEs: winepath may otherwise follow their
+    # symlink into Proton's installation and produce a Z: path.
+    if [[ "$launch_exe" == "$prefix_path/"* ]]; then
+        launch_target_arg=$(prefix_path_to_wine "$launch_exe") || \
+            die "Could not map launch target into the Wine prefix: $launch_exe"
+    else
+        launch_target_arg=$(to_wine_path "$launch_exe") || \
+            die "Could not convert launch target to a Wine path: $launch_exe"
+    fi
     if [[ -n "$target_cwd" ]]; then
-        launch_cwd_arg=$(to_wine_path "$target_cwd") || \
-            die "Could not convert target working directory to a Wine path: $target_cwd"
+        if [[ "$target_cwd" == "$prefix_path/"* ]]; then
+            launch_cwd_arg=$(prefix_path_to_wine "$target_cwd") || \
+                die "Could not map target working directory into the Wine prefix: $target_cwd"
+        else
+            launch_cwd_arg=$(to_wine_path "$target_cwd") || \
+                die "Could not convert target working directory to a Wine path: $target_cwd"
+        fi
     fi
 fi
 
