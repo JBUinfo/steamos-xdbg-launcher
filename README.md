@@ -21,7 +21,8 @@ use **Attach** while it is running.
   share `wineserver`; Steam Flatpak is rejected for Attach mode.
 - Launch mode creates and reuses a private Proton prefix for standalone
   executables, so no AppID or compatdata path is required. Use
-  `--compatdata`/`--prefix` only for a custom prefix.
+  `--compatdata`/`--prefix` only for a custom prefix. The private prefix is
+  per-user and is created automatically; no pre-existing folder is required.
 
 The launcher does not change game files or bypass anti-cheat. Debugging can
 make a game or the desktop unstable; use an offline/test setup.
@@ -96,6 +97,8 @@ Run/F9 only when you want to start that standalone program.
 For example, launch Windows Notepad without supplying an AppID or a
 `--compatdata` path. The prefix is created under
 `$XDG_DATA_HOME/xdbg/proton-prefix` (or `~/.local/share/xdbg/proton-prefix`):
+this is the current user's private directory, not a repository or machine-wide
+path.
 
 ```bash
 ./launch-xdbg.sh --launch 'C:\Windows\System32\notepad.exe'
