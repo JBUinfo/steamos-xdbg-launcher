@@ -19,6 +19,7 @@ use **Attach** while it is running.
 - Use `x32dbg.exe` for 32-bit targets and `x64dbg.exe` for 64-bit targets.
 - Steam games must be started through native Steam so the game and debugger
   share `wineserver`; Steam Flatpak is rejected for Attach mode.
+- `curl` and `jq` are required by the optional MCP recovery helper.
 - Launch mode creates and reuses a private Proton prefix for standalone
   executables, so no AppID or compatdata path is required. Use
   `--compatdata`/`--prefix` only for a custom prefix. The private prefix is
@@ -150,6 +151,53 @@ directory. Override it with `--target-cwd` when a program needs another one.
 `--check` prints the detected prefix without launching. In attach mode,
 arguments after `--` are passed unchanged to xdbg. Use `--log FILE` for output.
 
+### Recover suspended threads through MCP
+
+If x64dbg becomes `LOCKED` after a breakpoint and its **Run** command cannot
+resume the target, use `resume-xdbg-threads.sh` from a separate terminal. We
+created it because a Proton breakpoint can leave the debugger, game, and other
+debugging tools suspended together; a separate MCP client can still reach
+x64dbg and repair that state. It reads the bearer token from the MCP plugin's
+local `mcp_config.json`, detects the active x64/x32 server, sends x64dbg's
+global `resumeallthreads` command, clears per-thread suspend counts, and sends
+**Run/F9** by default. It does not delete breakpoints or terminate the game.
+
+```bash
+./resume-xdbg-threads.sh                 # recover and continue (F9)
+./resume-xdbg-threads.sh --dry-run       # inspect only
+./resume-xdbg-threads.sh --passes 2      # clear nested suspend counts
+./resume-xdbg-threads.sh --threads-only  # resume threads, stay paused
+```
+
+If it immediately pauses again, an active breakpoint was hit; disable or
+adjust that breakpoint before running again.
+
+The MCP plugin must be running inside x64dbg. When the helper is kept beside an
+x64dbg release, it finds `mcp_config.json` automatically; otherwise it checks
+`~/.local/share/xdbg/release/x64/` and `x32/`. Use `--config FILE` or
+`XDBG_MCP_TOKEN`/`XDBG_MCP_URL` for a custom installation. Keep the MCP server
+bound to localhost because its token grants full debugger control.
+
+### WinSock test binaries
+
+`examples/winsock-test/` contains a small localhost server and client for
+repeatable xdbg tests. We created them so breakpoints can be tested without a
+game: both programs call `Ws2_32.dll` directly, making `socket`, `bind`,
+`listen`, `accept`, `connect`, `send`, and `recv` easy to find in x32dbg or
+x64dbg. Build both architectures with:
+
+```bash
+cd examples/winsock-test
+./build.sh
+```
+
+The output contains `winsock32-*` (PE32 for x32dbg) and `winsock64-*` (PE32+
+for x64dbg). Open the server and client with `--launch`, press F9 in the
+server first, then press F9 in the client. Use the same private Proton prefix
+for both processes; the sample only listens on `127.0.0.1:27015`. See
+[`examples/winsock-test/README.md`](examples/winsock-test/README.md) for the
+complete commands and breakpoint suggestions.
+
 ## How it works
 
 The script recovers Proton, prefix, display and session details, then invokes:
@@ -169,6 +217,14 @@ terminal. Ctrl+C or closing that terminal sends a cleanup signal to Proton.
 
 ## Troubleshooting
 
+- **Text looks wrong or dump columns overlap:** `MS Shell Dlg 2` is a Windows
+  font alias, and debugger panes may fall back from `Lucida Console` to the
+  proportional `Noto Sans` under Proton. In x64dbg, open
+  `Options -> Appearance -> Font` and set the **Application** font to
+  `DejaVu Sans` (Regular, 9–10 pt). Set
+  **Disassembly**, **HexDump**, **Registers**, **Stack**, **AbstractTableView**,
+  and **HexEdit** to `DejaVu Sans Mono` (or `Noto Sans Mono`), then restart
+  x64dbg. Do not change fonts inside the game's Proton prefix unless needed.
 - **No game:** start it in Steam, wait for its main process, or use
   `--start-game`.
 - **No automatic Attach detection:** use native Steam and pass `--appid APPID`
