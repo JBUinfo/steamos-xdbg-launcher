@@ -176,27 +176,10 @@ The MCP plugin must be running inside x64dbg. When the helper is kept beside an
 x64dbg release, it finds `mcp_config.json` automatically; otherwise it checks
 `~/.local/share/xdbg/release/x64/` and `x32/`. Use `--config FILE` or
 `XDBG_MCP_TOKEN`/`XDBG_MCP_URL` for a custom installation. Keep the MCP server
-bound to localhost because its token grants full debugger control.
-
-### WinSock test binaries
-
-`examples/winsock-test/` contains a small localhost server and client for
-repeatable xdbg tests. We created them so breakpoints can be tested without a
-game: both programs call `Ws2_32.dll` directly, making `socket`, `bind`,
-`listen`, `accept`, `connect`, `send`, and `recv` easy to find in x32dbg or
-x64dbg. Build both architectures with:
-
-```bash
-cd examples/winsock-test
-./build.sh
-```
-
-The output contains `winsock32-*` (PE32 for x32dbg) and `winsock64-*` (PE32+
-for x64dbg). Open the server and client with `--launch`, press F9 in the
-server first, then press F9 in the client. Use the same private Proton prefix
-for both processes; the sample only listens on `127.0.0.1:27015`. See
-[`examples/winsock-test/README.md`](examples/winsock-test/README.md) for the
-complete commands and breakpoint suggestions.
+bound to localhost because its token grants full debugger control. This helper
+requires the [SetsunaYukiOvO/x64dbg-mcp](https://github.com/SetsunaYukiOvO/x64dbg-mcp)
+plugin/server to be installed and running inside x64dbg; it is not compatible
+with an unrelated MCP implementation.
 
 ## How it works
 

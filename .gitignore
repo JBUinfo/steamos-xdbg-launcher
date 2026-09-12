@@ -9,6 +9,9 @@ x64dbg.ini
 # Large/private local copies of the x64dbg distribution
 tools/
 
+# Local WinSock xdbg fixtures (not published in the launcher repository)
+examples/
+
 # Local exploratory notes
 PLAN_*.md
 
